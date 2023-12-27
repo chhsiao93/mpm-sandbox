@@ -38,12 +38,6 @@ mpm.add_spikes(
             color=0xFFAAAA,
             sample_density=4,
             material=MPMSolver.material_elastic)
-'''mpm.add_ngon(sides=6,
-             center=[0.7,0.3],
-             radius=0.1,
-             angle=0,
-             sample_density=1,
-             material=MPMSolver.material_elastic)'''
 mpm.add_cube(
     lower_corner=[0.,0],
     cube_size=[1,0.1],

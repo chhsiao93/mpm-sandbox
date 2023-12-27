@@ -101,7 +101,7 @@ class MPMSolver:
         self.fan_center = ti.Vector.field(self.dim, dtype=ti.f32, shape=()) # for tracking fan center
         self.fan_vel = ti.Vector.field(self.dim, dtype=ti.f32, shape=()) # for tracking fan velocity
         self.omega = ti.field(ti.f32, shape=()) # omgega for the center region of the fan
-        self.omega[None] = -160.0
+        self.omega[None] = -20
         self.rod_radius = 0.1 # radius of the rod for appling angular momentum
         # self.tau = 0
         # self.momentum = 0
@@ -783,7 +783,7 @@ class MPMSolver:
             print(f'needed substeps: {substeps}')
 
         while frame_time_left > 0:
-            print('.', end='', flush=True)
+            #print('.', end='', flush=True)
             self.total_substeps += 1
             if self.use_adaptive_dt:
                 if self.use_g2p2g:
@@ -830,7 +830,7 @@ class MPMSolver:
             self.all_time_max_velocity = max(self.all_time_max_velocity,
                                              cur_frame_velocity)
 
-        print()
+        #print()
 
         if print_stat:
             ti.profiler.print_kernel_profiler_info()
