@@ -18,12 +18,14 @@ class MPMSolver:
     material_snow = 2
     material_sand = 3
     material_stationary = 4
+    material_actuator = 5
     materials = {
         'WATER': material_water,
         'ELASTIC': material_elastic,
         'SNOW': material_snow,
         'SAND': material_sand,
         'STATIONARY': material_stationary,
+        'ACTUATOR': material_actuator,
     }
 
     # Surface boundary conditions
@@ -44,10 +46,11 @@ class MPMSolver:
     def __init__(
             self,
             res,
+            act_vel_func,
             quant=False,
             use_voxelizer=True,
             size=1,
-            max_num_particles=2**30, #2**30
+            max_num_particles=2**30,
             # Max 1 G particles
             padding=3,
             unbounded=False,
@@ -63,7 +66,10 @@ class MPMSolver:
             use_adaptive_dt=False,
             use_ggui=False,
             use_emitter_id=False
+            
     ):
+        
+        
         self.dim = len(res)
         self.quant = quant
         self.use_g2p2g = use_g2p2g
@@ -97,21 +103,16 @@ class MPMSolver:
         self.use_adaptive_dt = use_adaptive_dt
         self.use_ggui = use_ggui
         self.F_bound = 4.0
-        
-        self.fan_center = ti.Vector.field(self.dim, dtype=ti.f32, shape=()) # for tracking fan center
-        self.fan_vel = ti.Vector.field(self.dim, dtype=ti.f32, shape=()) # for tracking fan velocity
-        self.omega = ti.field(ti.f32, shape=()) # omgega for the center region of the fan
-        self.omega[None] = -98.5
-        self.rod_radius = 0.1 # radius of the rod for appling angular momentum
-        # self.tau = 0
-        # self.momentum = 0
-        # self.moment_inertia = 10
-        
+        self.act_vel_func = act_vel_func
+        # for const vel actuator
+        self.act_const_vel = self.act_vel_func(self.t)
+        # for const force actuator
+        # self.act_const_force = ti.Vector.field(self.dim, dtype=ti.f32, shape=())
         # Affine velocity field
         if not self.use_g2p2g:
             self.C = ti.Matrix.field(self.dim, self.dim, dtype=ti.f32)
         # Deformation gradient
-        
+
         if quant:
             qft = ti.types.quant.fixed(21, max_value=2.0)
             self.x = ti.Vector.field(self.dim, dtype=qft)
@@ -326,6 +327,19 @@ class MPMSolver:
         assert isinstance(g, (tuple, list))
         assert len(g) == self.dim
         self.gravity[None] = g
+        
+    @ti.func
+    def vel_func(self, v, t):
+        vel_out = ti.Vector.zero(ti.f32, self.dim)
+        if t > 0.2:
+            vel_out[0] = -0.5
+            vel_out[1] = 0.0
+            # vel_out[1] = -0.2*ti.math.sin((t-0.2)*10)
+        else:
+            vel_out[0] = 0.0
+            vel_out[1] = 0.0
+            # vel_out[1] = (0.25-0.3)/0.2
+        return vel_out
 
     @ti.func
     def sand_projection(self, sigma, p):
@@ -518,16 +532,17 @@ class MPMSolver:
                 F = ti.Matrix.identity(ti.f32, self.dim)
                 if ti.static(self.support_plasticity):
                     F[0, 0] = self.Jp[p]
-                    
+
             F = (ti.Matrix.identity(ti.f32, self.dim) + dt * self.C[p]) @ F
             # Hardening coefficient: snow gets harder when compressed
             h = 1.0
             if ti.static(self.support_plasticity):
                 if self.material[p] != self.material_water:
                     h = ti.exp(10 * (1.0 - self.Jp[p]))
-            if self.material[
-                    p] == self.material_elastic:  # the smaller, the softer
-                h = 100 # make it really stiff so that it acts like rigid body
+            if self.material[p] == self.material_elastic:  #  make it softer or harder
+                h = 0.3
+            if self.material[p] == self.material_actuator:  #  make it softer or harder
+                h = 100.0
             mu, la = self.mu_0 * h, self.lambda_0 * h
             if self.material[p] == self.material_water:  # liquid
                 mu = 0.0
@@ -552,6 +567,7 @@ class MPMSolver:
             elif self.material[p] == self.material_snow:
                 # Reconstruct elastic deformation gradient after plasticity
                 F = U @ sig @ V.transpose()
+
             stress = ti.Matrix.zero(ti.f32, self.dim, self.dim)
 
             if self.material[p] != self.material_sand:
@@ -580,7 +596,6 @@ class MPMSolver:
             if self.material[p] == self.material_water:
                 mass *= self.water_density
             affine = stress + mass * self.C[p]
-
             # Loop over 3x3 grid node neighborhood
             for offset in ti.static(ti.grouped(self.stencil_range())):
                 dpos = (offset.cast(float) - fx) * self.dx
@@ -700,14 +715,12 @@ class MPMSolver:
                 t, dt, unbounded, grid_v))
 
     @ti.kernel
-    def g2p(self, dt: ti.f32):
+    def g2p(self, dt: ti.f32, t:ti.f32):
         ti.loop_config(block_dim=256)
         if ti.static(self.use_bls):
             for d in ti.static(range(self.dim)):
                 ti.block_local(self.grid_v.get_scalar_field(d))
         ti.no_activate(self.particle)
-        avg_v = ti.Vector.zero(ti.f32, self.dim)
-        counter = 0
         for I in ti.grouped(self.pid):
             p = self.pid[I]
             base = ti.floor(self.x[p] * self.inv_dx - 0.5).cast(int)
@@ -729,26 +742,25 @@ class MPMSolver:
                     weight *= w[offset[d]][d]
                 new_v += weight * g_v
                 new_C += 4 * self.inv_dx * weight * g_v.outer_product(dpos)
-            if self.material[p] != self.material_stationary: 
-                self.v[p], self.C[p] = new_v, new_C
-                # tracking center position and velocity
-                if self.material[p] == self.material_elastic & all(self.x[p] == self.fan_center[None]):
+            if self.material[p] != self.material_stationary:
+                if self.material[p] == self.material_actuator:
+                    new_v = ti.Vector.zero(ti.f32, self.dim)
+                    new_v = self.vel_func(new_v, t)
+                    self.v[p] = new_v
                     self.x[p] += dt * self.v[p]
-                    self.fan_center[None] = self.x[p]
-                    self.fan_vel[None] = self.v[p]
+                    # if t < 0.2:
+                    #     self.v[p][0] = 0.0
+                    #     self.v[p][1] = 0.0
+                    # else:
+                    #     self.v[p], self.C[p] = new_v, new_C
+                    #     self.v[p][1] = 0 # fix y dir
+                    #     self.x[p] += dt * self.v[p]  # advection
+                    #     a = -0.1
+                    #     self.v[p][0] += self.p_mass * a # const force applied on particles
                 else:
+                    self.v[p], self.C[p] = new_v, new_C
                     self.x[p] += dt * self.v[p]  # advection
-            # apply rotation in the rod region
-            if (self.material[p] == self.material_elastic) & (self.omega[None] != 0.0):
-                dist_center = ti.math.distance(self.x[p], self.fan_center[None]) # distance from center to particle
-                norm_vect = ti.math.normalize(self.x[p] - self.fan_center[None]) # normalized vector from center to particle
-                current_omega = ((self.v[p] - self.fan_vel[None]) * ti.Vector([-norm_vect[1], norm_vect[0]]))/dist_center # current angular velocity relative to center
-                if 0 < dist_center < self.rod_radius: # inside rod region
-                    self.v[p] += (self.omega[None]-current_omega) * dist_center * ti.Vector([-norm_vect[1], norm_vect[0]]) # make v = omega * r
-                    #self.x[p] += dt * self.v[p]
-        self.omega[None] = 0.0 # reset omega to 0
-                
-                
+
     @ti.kernel
     def compute_max_velocity(self) -> ti.f32:
         max_velocity = 0.0
@@ -783,7 +795,7 @@ class MPMSolver:
             print(f'needed substeps: {substeps}')
 
         while frame_time_left > 0:
-            #print('.', end='', flush=True)
+            print('.', end='', flush=True)
             self.total_substeps += 1
             if self.use_adaptive_dt:
                 if self.use_g2p2g:
@@ -820,7 +832,10 @@ class MPMSolver:
                 for p in self.grid_postprocess:
                     p(self.t, dt, self.grid_v)
                 self.t += dt
-                self.g2p(dt)
+                # update actuator
+                #self.set_act_vel(self.act_vel_func)
+                # self.act_const_vel = self.vel_func
+                self.g2p(dt, self.t)
 
             cur_frame_velocity = self.compute_max_velocity()
             if smry_writer is not None:
@@ -830,7 +845,7 @@ class MPMSolver:
             self.all_time_max_velocity = max(self.all_time_max_velocity,
                                              cur_frame_velocity)
 
-        #print()
+        print()
 
         if print_stat:
             ti.profiler.print_kernel_profiler_info()
@@ -897,7 +912,8 @@ class MPMSolver:
         for i in range(self.dim):
             vol = vol * cube_size[i]
         num_new_particles = int(sample_density * vol / self.dx**self.dim + 1)
-        assert self.n_particles[None] + num_new_particles <= self.max_num_particles
+        assert self.n_particles[
+            None] + num_new_particles <= self.max_num_particles
 
         for i in range(self.dim):
             self.source_bound[0][i] = lower_corner[i]
@@ -907,80 +923,7 @@ class MPMSolver:
 
         self.seed(num_new_particles, material, color)
         self.n_particles[None] += num_new_particles
-    ### add spikes - start
-    def add_spikes(
-        self,
-        sides,
-        center,
-        radius,
-        width,
-        material,
-        color=0xFFFFFF,
-        sample_density=None,
-        velocity=None,
-    ):
-        if self.dim != 2:
-            raise ValueError("Add Spikes only works for 2D simulations")
 
-        if sample_density is None:
-            sample_density = 2**self.dim
-        dist_side = (width/2)/(math.tan(math.pi/sides)) # center to side
-        dist_vertice = (width/2)/(math.sin(math.pi/sides)) # center to vertice
-        area_ngon = 0.5 * (dist_vertice * self.inv_dx)**2 * math.sin(
-            2 * math.pi / sides) * sides # center Ngon
-        area_blade = width * (radius - dist_side) * self.inv_dx**2 * sides # and spikes
-        
-        num_particles = int(math.ceil((area_ngon + area_blade) * sample_density))
-        self.source_bound[0] = center
-        self.source_bound[1] = [radius, radius]
-        self.fan_center[None] = center
-        self.set_source_velocity(velocity=velocity)
-
-        assert self.n_particles[None] + num_particles <= self.max_num_particles
-
-        self.seed_spike(num_particles, sides, radius, width, material, color)
-        self.n_particles[None] += num_particles
-
-    @ti.func
-    def random_point_in_unit_spike(self, sides, radius, width):
-        point = ti.Vector.zero(ti.f32, 2)
-        central_angle = 2 * math.pi / sides
-        while True:
-            isin = False
-            point = ti.Vector([ti.random(), ti.random()]) * 2 - 1 #-1 to 1
-            for i in range(sides):
-                p_B = ti.Vector([0,0])
-                p_C = ti.Vector([1,1]) * ti.Vector([ti.cos(central_angle*i),ti.sin(central_angle*i)])
-                p_A = ti.Vector([width/2/radius,width/2/radius]) * ti.Vector([ti.cos(central_angle*i+ti.math.pi/2),ti.sin(central_angle*i+ti.math.pi/2)])
-                # check if the point is in the rectangle (half of blade)
-                if (ti.math.dot(p_B-p_A, point-p_A) >= 0) & (ti.math.dot(p_B-p_C, point-p_C) >= 0) & (ti.math.dot(p_A-p_B, point-p_B) >= 0) & (ti.math.dot(p_C-p_B, point-p_B) >= 0):
-                    isin = True
-                    break
-                # check if the point is in the rectangle (the other half of blade)
-                elif (ti.math.dot(p_B+p_A, point+p_A) >= 0) & (ti.math.dot(p_B-p_C, point-p_C) >= 0) & (ti.math.dot(-p_A-p_B, point-p_B) >= 0) & (ti.math.dot(p_C-p_B, point-p_B) >= 0):
-                    isin = True
-                    break
-            if isin:
-                break    
-        return point
-
-    @ti.kernel
-    def seed_spike(self, new_particles: ti.i32, sides: ti.i32, radius:ti.f32, width:ti.f32,
-                     new_material: ti.i32, color: ti.i32):
-        # seed at center
-        self.seed_particle(self.n_particles[None], self.fan_center[None], new_material, 0xED553B, self.source_velocity[None], None)
-        for i in range(self.n_particles[None]+1,
-                       self.n_particles[None] + new_particles):
-            x = self.random_point_in_unit_spike(sides, radius, width)
-            x = self.source_bound[0] + x * self.source_bound[1]
-            if ti.math.distance(x, self.fan_center[None]) < self.rod_radius: # highlight the rigeion of omega application
-                self.seed_particle(i, x, new_material, 0xED553B,
-                               self.source_velocity[None], None)
-            else:
-                self.seed_particle(i, x, new_material, color,
-                               self.source_velocity[None], None)
-
-    ### add spikes - end
     def add_ngon(
         self,
         sides,
@@ -1018,7 +961,7 @@ class MPMSolver:
         point = ti.Vector.zero(ti.f32, 2)
         central_angle = 2 * math.pi / sides
         while True:
-            point = ti.Vector([ti.random(), ti.random()]) * 2 - 1 #-1 to 1
+            point = ti.Vector([ti.random(), ti.random()]) * 2 - 1
             point_angle = ti.atan2(point.y, point.x)
             theta = (point_angle -
                      angle) % central_angle  # polygon angle is from +X axis
