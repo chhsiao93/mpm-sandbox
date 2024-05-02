@@ -47,7 +47,7 @@ class MPMSolver:
             quant=False,
             use_voxelizer=True,
             size=1,
-            max_num_particles=2**15, #2**30
+            max_num_particles=2**30, #2**30
             # Max 1 G particles
             padding=3,
             unbounded=False,
@@ -101,7 +101,7 @@ class MPMSolver:
         self.fan_center = ti.Vector.field(self.dim, dtype=ti.f32, shape=()) # for tracking fan center
         self.fan_vel = ti.Vector.field(self.dim, dtype=ti.f32, shape=()) # for tracking fan velocity
         self.omega = ti.field(ti.f32, shape=()) # omgega for the center region of the fan
-        self.omega[None] = -20
+        self.omega[None] = -98.5
         self.rod_radius = 0.1 # radius of the rod for appling angular momentum
         # self.tau = 0
         # self.momentum = 0
@@ -897,8 +897,7 @@ class MPMSolver:
         for i in range(self.dim):
             vol = vol * cube_size[i]
         num_new_particles = int(sample_density * vol / self.dx**self.dim + 1)
-        assert self.n_particles[
-            None] + num_new_particles <= self.max_num_particles
+        assert self.n_particles[None] + num_new_particles <= self.max_num_particles
 
         for i in range(self.dim):
             self.source_bound[0][i] = lower_corner[i]
