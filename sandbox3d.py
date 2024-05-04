@@ -27,17 +27,17 @@ def f(t):
     else:
         return [-1.0, -0.01]
     
-ti.init(arch=ti.cuda, device_memory_GB=20)  # Try to run on GPU
+ti.init(arch=ti.cuda, device_memory_GB=15)  # Try to run on GPU
 
 gui = ti.GUI("Taichi Elements", res=512, background_color=0x112F41, show_gui=False)
 
-mpm = MPMSolver(res=(32, 32, 32), act_vel_func=f)
+mpm = MPMSolver(res=(32, 32, 32))
 mpm.set_gravity([0, -9.81, 0])
 
 # adding a slope plane
-slope_a = 45
+slope_a = 60
 slope_l = 0.1
-lower_corner = [0.8,0.29,0.45]
+lower_corner = [0.8,0.28,0.45]
 x_ = np.linspace(0.0,slope_l,100)
 z_ = np.linspace(0.0,slope_l,100)
 x, z = np.meshgrid(x_,z_)
@@ -61,12 +61,12 @@ for frame in range(200):
     mpm.step(8e-3)
     particles = mpm.particle_info()
     print(mpm.t)
-    sizes = np.ones(len(particles['color']))*1.0 + (particles['material']==mpm.material_actuator)
     positions.append(particles['position'])
-    materials.append(particles['material'])
+    # sizes = np.ones(len(particles['color']))*1.0 + (particles['material']==mpm.material_actuator)
     # gui.circles(particles['position'], radius=sizes, color=particles['color'])
     # gui.show(f'{args.out_dir}/{frame:06d}.png' if write_to_disk else None)
+materials.append(particles['material'])
 positions = np.array(positions)
 materials = np.array(materials)
 # np.save('sandbox_pos3d.npy', np.array(positions))
-np.savez('sandbox3d.npz', positions, materials)
+np.savez('sandbox3d.npz', pos=positions, mat=materials)

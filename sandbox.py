@@ -55,7 +55,7 @@ mpm.add_cube(
 
 positions = []
 
-for frame in range(200):
+for frame in range(20):
     mpm.step(8e-3)
     particles = mpm.particle_info()
     print(mpm.t)
@@ -64,3 +64,4 @@ for frame in range(200):
     gui.circles(particles['position'], radius=sizes, color=particles['color'])
     gui.show(f'{args.out_dir}/{frame:06d}.png' if write_to_disk else None)
 # np.save('sandbox_pos.npy', np.array(positions))
+np.save('sandbox3d.npz', pos=np.array(positions), mat=np.array(particles['material']))

@@ -46,7 +46,6 @@ class MPMSolver:
     def __init__(
             self,
             res,
-            act_vel_func,
             quant=False,
             use_voxelizer=True,
             size=1,
@@ -103,11 +102,6 @@ class MPMSolver:
         self.use_adaptive_dt = use_adaptive_dt
         self.use_ggui = use_ggui
         self.F_bound = 4.0
-        self.act_vel_func = act_vel_func
-        # for const vel actuator
-        self.act_const_vel = self.act_vel_func(self.t)
-        # for const force actuator
-        # self.act_const_force = ti.Vector.field(self.dim, dtype=ti.f32, shape=())
         # Affine velocity field
         if not self.use_g2p2g:
             self.C = ti.Matrix.field(self.dim, self.dim, dtype=ti.f32)
@@ -331,8 +325,8 @@ class MPMSolver:
     @ti.func
     def vel_func(self, v, t):
         vel_out = ti.Vector.zero(ti.f32, self.dim)
-        if t > 0.2:
-            vel_out[0] = -0.5
+        if t > 0.01:
+            vel_out[0] = -0.2
             vel_out[1] = 0.0
             # vel_out[1] = -0.2*ti.math.sin((t-0.2)*10)
         else:
@@ -833,8 +827,6 @@ class MPMSolver:
                     p(self.t, dt, self.grid_v)
                 self.t += dt
                 # update actuator
-                #self.set_act_vel(self.act_vel_func)
-                # self.act_const_vel = self.vel_func
                 self.g2p(dt, self.t)
 
             cur_frame_velocity = self.compute_max_velocity()
