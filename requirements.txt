@@ -1,4 +1,4 @@
-taichi==1.1.0
+taichi
 plyfile
 imageio
 matplotlib
